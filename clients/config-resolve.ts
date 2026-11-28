@@ -243,35 +243,15 @@ function canonicalGlobalFile(
 		: path.join(options.globalDir, CANONICAL_GLOBAL_CONFIG_FILE);
 }
 
-function collectDocuments(
-	dir: string,
-	locations: readonly ConfigLocation[],
-	tier: SourceTier,
-	onReadError: ((failure: ConfigReadFailure) => void) | undefined,
-): ConfigDocument[] {
-	const documents: ConfigDocument[] = [];
-	for (const location of locations) {
-		const file = path.join(dir, location.relativePath);
-		// The global tier reads its file by absolute path; a candidate that IS
-		// that file is refused rather than adopted as a project/nested-project
-		// document, which would double-read and double-validate it
-		// (global-config-location PR, refs #2457).
-		if (tier !== "global" && isResolvedGlobalConfigPath(file)) continue;
-		const outcome = readConfigDocument(file);
-		if (outcome.status === "missing") continue;
-		if (outcome.status === "error") {
-			onReadError?.({
-				file,
-				location,
-				tier,
-				error: outcome.error,
-				sourceText: outcome.sourceText,
-			});
-			continue;
-		}
-		documents.push({ tier, file, location, value: outcome.value });
-	}
-	return documents;
+/**
+ * One path a resolution reads, present on disk or not: a global location, or
+ * a project location in one directory of the project walk.
+ */
+export interface PiLensConfigCandidate {
+	readonly file: string;
+	readonly location: ConfigLocation;
+	/** The project-walk directory, or undefined for a global location. */
+	readonly dir?: string;
 }
 
 /**
@@ -290,13 +270,18 @@ const CANONICAL_PROJECT_CONFIG_LOCATIONS: readonly ConfigLocation[] =
  * is `nested-project`, which is what makes "nearest wins, per field" fall out
  * of the core's tier precedence instead of being re-implemented here.
  */
-function collectPiLensConfigDocuments(
+/**
+ * Every path a resolution reads, present or not, in reading order (global,
+ * then project dirs outermost first). The one derivation:
+ * `collectPiLensConfigDocuments` reads exactly these, and the
+ * `languages` cache revalidates by their stat signatures.
+ */
+export function piLensConfigCandidates(
 	options: ResolvePiLensConfigOptions,
-): ConfigDocument[] {
-	const documents: ConfigDocument[] = [];
-	const { globalDir, onReadError } = options;
+): PiLensConfigCandidate[] {
+	const candidates: PiLensConfigCandidate[] = [];
+	const { globalDir } = options;
 	const globalConfigPath = canonicalGlobalFile(options);
-
 	if (globalDir !== undefined || globalConfigPath !== undefined) {
 		for (const location of GLOBAL_CONFIG_LOCATIONS) {
 			const file =
@@ -305,23 +290,9 @@ function collectPiLensConfigDocuments(
 					: globalDir === undefined
 						? undefined
 						: path.join(globalDir, location.relativePath);
-			if (file === undefined) continue;
-			const outcome = readConfigDocument(file);
-			if (outcome.status === "missing") continue;
-			if (outcome.status === "error") {
-				onReadError?.({
-					file,
-					location,
-					tier: "global",
-					error: outcome.error,
-					sourceText: outcome.sourceText,
-				});
-				continue;
-			}
-			documents.push({ tier: "global", file, location, value: outcome.value });
+			if (file !== undefined) candidates.push({ file, location });
 		}
 	}
-
 	if (options.cwd !== undefined) {
 		// Innermost first from the walk; reversed so the OUTERMOST directory is
 		// emitted first and lands in the lower-precedence `project` tier.
@@ -333,18 +304,61 @@ function collectPiLensConfigDocuments(
 		const locations = options.excludeLegacyProjectDocuments
 			? CANONICAL_PROJECT_CONFIG_LOCATIONS
 			: PROJECT_CONFIG_LOCATIONS;
-		const bearing = dirs
-			.map((dir) => ({
-				dir,
-				found: collectDocuments(dir, locations, "project", onReadError),
-			}))
-			.filter((entry) => entry.found.length > 0);
-		bearing.forEach((entry, index) => {
-			const tier: SourceTier = index === 0 ? "project" : "nested-project";
-			for (const document of entry.found) documents.push({ ...document, tier });
-		});
+		for (const dir of dirs) {
+			for (const location of locations) {
+				const file = path.join(dir, location.relativePath);
+				// The global tier reads its file by absolute path; a candidate that
+				// IS that file is refused rather than adopted as a project or
+				// nested-project document, which would double-read and
+				// double-validate it (global-config-location PR, refs #2457).
+				if (isResolvedGlobalConfigPath(file)) continue;
+				candidates.push({ file, location, dir });
+			}
+		}
 	}
+	return candidates;
+}
 
+function collectPiLensConfigDocuments(
+	options: ResolvePiLensConfigOptions,
+): ConfigDocument[] {
+	const documents: ConfigDocument[] = [];
+	// Documents per project-walk directory, in walk order (outermost first).
+	const bearing = new Map<string, ConfigDocument[]>();
+	for (const { file, location, dir } of piLensConfigCandidates(options)) {
+		const tier: SourceTier = dir === undefined ? "global" : "project";
+		const outcome = readConfigDocument(file);
+		if (outcome.status === "missing") continue;
+		if (outcome.status === "error") {
+			options.onReadError?.({
+				file,
+				location,
+				tier,
+				error: outcome.error,
+				sourceText: outcome.sourceText,
+			});
+			continue;
+		}
+		const document: ConfigDocument = {
+			tier,
+			file,
+			location,
+			value: outcome.value,
+		};
+		if (dir === undefined) {
+			documents.push(document);
+			continue;
+		}
+		const found = bearing.get(dir) ?? [];
+		found.push(document);
+		bearing.set(dir, found);
+	}
+	// The OUTERMOST config-bearing directory is the `project` tier; every
+	// nearer one is `nested-project`.
+	[...bearing.values()].forEach((found, index) => {
+		const tier: SourceTier = index === 0 ? "project" : "nested-project";
+		for (const document of found) documents.push({ ...document, tier });
+	});
 	return documents;
 }
 

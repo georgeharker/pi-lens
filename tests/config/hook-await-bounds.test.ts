@@ -2583,7 +2583,12 @@ const HELPER_UNBOUNDED: Readonly<Record<string, number>> = {
 	// lost their install fallbacks (`findUp`, `which rustup`, the lazy install
 	// and a second `which`), and ktfmt's install is one gated await, so the hook
 	// path awaits eight fewer calls.
-	"clients/formatters.ts": 107,
+	// 107 -> 108 (`languages.<id>.format`, #195): not a bound. The configured
+	// policy's `formatterAvailable` awaits the same `detectCandidate` the default path
+	// does, and runs INSTEAD of the default path (an early return), never beside
+	// it, so no formatter selection awaits more probes than before. It sits
+	// inside the format service's `bounded()` call like the rest of the seam.
+	"clients/formatters.ts": 108,
 	// 4 -> 3 and 2 -> 1 (#4984): not a bound. The two `await safeSpawnAsync`
 	// calls moved into `SecurityScanClient.runReportScan`, which the one-hop set
 	// does not walk, so the hook path's unbounded awaits are unchanged.

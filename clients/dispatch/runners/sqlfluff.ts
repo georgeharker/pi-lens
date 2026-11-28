@@ -155,7 +155,7 @@ const sqlfluffRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "sqlfluff");
-		const policy = getLinterPolicyForCwd(ctx.filePath, cwd);
+		const policy = getLinterPolicyForCwd(ctx.filePath, cwd, ctx.configuredLint?.tools);
 		if (policy && !policy.preferredRunners.includes("sqlfluff")) {
 			return skipped("not-preferred");
 		}

@@ -123,7 +123,7 @@ const markdownlintRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "markdownlint");
-		const policy = getLinterPolicyForCwd(ctx.filePath, cwd);
+		const policy = getLinterPolicyForCwd(ctx.filePath, cwd, ctx.configuredLint?.tools);
 		if (policy && !policy.preferredRunners.includes("markdownlint")) {
 			return skipped("not-preferred");
 		}

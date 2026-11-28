@@ -73,6 +73,13 @@ import {
 } from "./project-trust.js";
 import { getToolPath } from "./installer/index.js";
 import { getIsolatedNpxSpawnOptions } from "./tool-probe.js";
+import { reportPiLensConfigRecords } from "./config-resolve.js";
+import { migrationSubject } from "./config-core/records.js";
+import { configuredFormatterOf, languagePointer } from "./language-config.js";
+import {
+	type FilePolicyResolution,
+	languagePolicyForFilePath,
+} from "./language-policy-for-file.js";
 import {
 	getFormatterPolicyForFile,
 	getSmartDefaultFormatterName,
@@ -1933,10 +1940,102 @@ async function getFormatterConfigSignature(
 
 // --- Public API ---
 
+/**
+ * `languages.<id>.format` (#195): exactly the named formatter if available,
+ * whatever its extensions; detection and the smart default are bypassed. An
+ * unknown name or `enabled: false` formats nothing. Kept out of the
+ * cwd:extension detection cache, which cannot see dialects or `files`
+ * patterns; the PATH probes keep their own latches.
+ */
+async function configuredFormatters(
+	filePath: string,
+	cwd: string,
+	policy: FilePolicyResolution,
+	name: string | null,
+): Promise<FormatterInfo[]> {
+	const key = policy.match.policy.key;
+	const formatter =
+		name === null ? undefined : ALL_FORMATTERS.find((f) => f.name === name);
+	if (name !== null && formatter === undefined)
+		reportUnknownFormatter(policy, key);
+	const available =
+		formatter !== undefined && (await formatterAvailable(formatter, cwd));
+	logLatency({
+		type: "phase",
+		phase: "formatter_selected",
+		filePath,
+		durationMs: 0,
+		metadata: {
+			formatter: available ? (formatter?.name ?? null) : null,
+			reason: configuredFormatterReason(name, available),
+			outcome: "miss" satisfies FormatterSelectionOutcome,
+			cached: false,
+			cwd,
+			languageKey: key,
+		},
+	});
+	return available && formatter ? [formatter] : [];
+}
+
+/**
+ * Whether a configured formatter can run: auto-installed, or detected. The
+ * caller's one `await` covers the detection, so this seam adds none of its
+ * own to the hook path (`hook-await-bounds` pins the module's count).
+ */
+function formatterAvailable(
+	formatter: FormatterInfo,
+	cwd: string,
+): Promise<boolean> {
+	if (shouldAutoInstallTool(formatter.name)) return Promise.resolve(true);
+	// A detection that threw is not this formatter being available.
+	return detectCandidate(formatter, cwd).then(
+		(candidate) => candidate.detected && !("error" in candidate),
+	);
+}
+
+/** The `formatter_selected` reason for a configured-language decision. */
+function configuredFormatterReason(
+	name: string | null,
+	available: boolean,
+): string {
+	if (name === null) return "disabled-for-language";
+	return available ? "configured-for-language" : "configured-unavailable";
+}
+
+/**
+ * The `PILENS_CFG_0005` record for a `format.formatter` that names no known
+ * formatter, located by pointer and never quoting the value.
+ */
+function reportUnknownFormatter(
+	policy: FilePolicyResolution,
+	key: string,
+): void {
+	const pointer = languagePointer(key, "format", "formatter");
+	const decidedBy = policy.resolution.provenance.get(pointer);
+	const file =
+		decidedBy?.file ?? policy.resolution.documents.at(-1)?.file ?? "";
+	reportPiLensConfigRecords([
+		{
+			code: "PILENS_CFG_0005",
+			file,
+			key: pointer,
+			subject: migrationSubject(file, pointer),
+			reason: `languages.${key}.format.formatter names an id that is not a known formatter; that language is not formatted`,
+			...(decidedBy?.tier ? { tier: decidedBy.tier } : {}),
+		},
+	]);
+}
+
 export async function getFormattersForFile(
 	filePath: string,
 	cwd: string,
 ): Promise<FormatterInfo[]> {
+	// The opt-in `languages.<id>.format` policy (#195), ahead of the cache: a
+	// file it governs never reads or writes the extension-keyed detection cache.
+	const policy = languagePolicyForFilePath(filePath);
+	const configured = configuredFormatterOf(policy?.match.policy);
+	if (policy && configured !== undefined)
+		return configuredFormatters(filePath, cwd, policy, configured);
 	const ext = path.extname(filePath).toLowerCase();
 	const base = path.basename(filePath).toLowerCase();
 	// Filename-keyed formatters (e.g. terragrunt.hcl) can share an extension

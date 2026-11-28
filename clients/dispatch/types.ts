@@ -20,6 +20,7 @@ import type {
 } from "../lsp/diagnostic-binding.js";
 import type { FileKind } from "../file-kinds.js";
 import type { FileRole } from "../file-role.js";
+import type { ConfiguredLint } from "../language-config.js";
 import type { GeneratedArtifactEvidence } from "../generated-artifacts.js";
 import type { PiLensProjectConfig } from "../project-lens-config.js";
 import type { RulePolicyMap } from "./rule-policy.js";
@@ -542,6 +543,7 @@ export const RUNNER_SKIP_REASONS = [
 	"install-disabled",
 	"not-configured",
 	"not-preferred",
+	"not-configured-for-language",
 	"probe-incomplete",
 	"probe-rejected",
 	"trust-refused",
@@ -563,6 +565,9 @@ export const VERDICT_SKIP_REASONS: readonly RunnerSkipReason[] = [
 	"dialect-unsupported",
 	"covered-by-primary",
 	"disabled-by-config",
+	// The operator chose other linters for this language
+	// (`languages.<id>.lint`, #195): a decision, like a denial.
+	"not-configured-for-language",
 ];
 
 /**
@@ -597,6 +602,8 @@ export const SKIP_REASON_PHRASE: Record<RunnerSkipReason, string> = {
 		"not installed, and the managed install is off (PI_LENS_DISABLE_TOOL_INSTALL=1)",
 	"not-configured": "not configured",
 	"not-preferred": "the project's lint policy prefers another tool",
+	"not-configured-for-language":
+		"not listed in this language's languages.<id>.lint.tools",
 	"probe-incomplete": "its availability probe did not finish",
 	// The binary may be a runtime the tool needs (Java for SpotBugs), not the
 	// tool itself, so the phrase does not say the tool was found.
@@ -625,6 +632,7 @@ export const NOT_APPLICABLE_SKIP_REASONS: readonly RunnerSkipReason[] = [
 	"not-enabled",
 	"not-configured",
 	"not-preferred",
+	"not-configured-for-language",
 ];
 
 /** Whether a skip reason states the runner had nothing to check. */
@@ -1094,6 +1102,11 @@ export interface DispatchContext {
 	 * dispatcher skips these before their `when`/`run`, so the tool never spawns.
 	 */
 	readonly disabledRunnerIds?: ReadonlySet<string>;
+	/**
+	 * The file's validated `languages.<id>.lint` policy (#195,
+	 * `dispatch/language-lint.ts`). Absent = the default path.
+	 */
+	readonly configuredLint?: ConfiguredLint;
 	/** Only run blocking rules (severity: error) - used for fast feedback on file write */
 	readonly blockingOnly?: boolean;
 	readonly modifiedRanges?: ModifiedRange[];

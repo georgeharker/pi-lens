@@ -10,6 +10,16 @@ import { relativeInside, walkUpDirs } from "./path-utils.js";
 import { hasToolConfig, toolConfigDirs } from "./tool-config-presence.js";
 import type { ProjectConventions } from "./project-conventions.js";
 import { loadProjectSnapshotWithoutWordIndex } from "./project-snapshot.js";
+import { reportPiLensConfigRecords } from "./config-resolve.js";
+import {
+	type MigrationRecord,
+	migrationSubject,
+} from "./config-core/records.js";
+import { configuredAutofixOf, languagePointer } from "./language-config.js";
+import {
+	type FilePolicyResolution,
+	languagePolicyForFilePath,
+} from "./language-policy-for-file.js";
 
 type ToolGate = "config-first" | "smart-default" | "mixed";
 
@@ -885,37 +895,72 @@ export type AutofixToolName =
 	| "markdownlint"
 	| "oxlint";
 
-type LintRunnerName =
-	| JstsLintRunnerName
-	| "ruff-lint"
-	| "stylelint"
-	| "sqlfluff"
-	| "rubocop"
-	| "yamllint"
-	| "actionlint"
-	| "markdownlint"
-	| "htmlhint"
-	| "hadolint"
-	| "helm-lint"
-	| "golangci-lint"
-	| "phpstan"
-	| "ktlint"
-	| "taplo"
-	| "rust-clippy"
-	| "shellcheck"
-	| "fish-indent"
-	| "tflint"
-	| "terragrunt"
-	| "credo"
-	| "cpp-check"
-	| "dart-analyze"
-	| "gleam-check"
-	| "psscriptanalyzer"
-	| "prisma-validate"
-	| "mypy"
-	| "detekt"
-	| "swiftlint"
-	| "vale";
+/**
+ * Every runner id the lint policy ranks: what `languages.<id>.lint.tools`
+ * selects among. The JS/TS members repeat {@link JstsLintRunnerName}; the
+ * policy rows fail to compile if the two drift.
+ */
+export const LINT_RUNNER_NAMES = [
+	"eslint",
+	"oxlint",
+	"biome-check-json",
+	"ruff-lint",
+	"stylelint",
+	"sqlfluff",
+	"rubocop",
+	"yamllint",
+	"actionlint",
+	"markdownlint",
+	"htmlhint",
+	"hadolint",
+	"helm-lint",
+	"golangci-lint",
+	"phpstan",
+	"ktlint",
+	"taplo",
+	"rust-clippy",
+	"shellcheck",
+	"fish-indent",
+	"tflint",
+	"terragrunt",
+	"credo",
+	"cpp-check",
+	"dart-analyze",
+	"gleam-check",
+	"psscriptanalyzer",
+	"prisma-validate",
+	"mypy",
+	"detekt",
+	"swiftlint",
+	"vale",
+] as const;
+
+type LintRunnerName = (typeof LINT_RUNNER_NAMES)[number];
+
+const LINT_RUNNER_NAME_SET: ReadonlySet<string> = new Set(LINT_RUNNER_NAMES);
+
+/** True when `id` is a linter `languages.<id>.lint.tools` can name. */
+export function isSelectableLinterId(id: string): boolean {
+	return LINT_RUNNER_NAME_SET.has(id);
+}
+
+/**
+ * The preferred runners under an explicit `languages.<id>.lint` policy (#195):
+ * the listed tools among `runnerNames`, in the listed order. The one place
+ * an explicit policy replaces the config-detected preference, so every runner
+ * that asks its policy owner "am I preferred" gets the operator's answer.
+ */
+function explicitPreferred<T extends string>(
+	runnerNames: readonly T[],
+	selected: readonly string[],
+): T[] {
+	const preferred: T[] = [];
+	for (const id of selected) {
+		const runner = runnerNames.find((name) => name === id);
+		if (runner !== undefined) preferred.push(runner);
+	}
+	return preferred;
+}
 
 export interface LinterPolicy {
 	runnerNames: LintRunnerName[];
@@ -1809,9 +1854,16 @@ export function getCachedProjectConventions(
 	return snapshot?.conventions;
 }
 
+/**
+ * `selected` is the file's `languages.<id>.lint` policy (#195)
+ * (`DispatchContext.configuredLint.tools`). When present, the policy's preferred
+ * runners are exactly the listed tools among the policy's own runners, in
+ * the listed order: the operator's choice replaces tool-config detection.
+ */
 export function getLinterPolicyForCwd(
 	filePath: string,
 	cwd: string,
+	selected?: readonly string[],
 ): LinterPolicy | undefined {
 	const context: LinterPolicyContext = {
 		hasEslintConfig: hasToolConfig("eslint", cwd),
@@ -1835,6 +1887,9 @@ export function getLinterPolicyForCwd(
 		),
 	};
 	const policy = getLinterPolicyForFile(filePath, context);
+	if (policy && selected !== undefined) {
+		policy.preferredRunners = explicitPreferred(policy.runnerNames, selected);
+	}
 	if (policy) {
 		const conventions = getCachedProjectConventions(cwd);
 		if (conventions && conventions.frameworks.length > 0) {
@@ -1852,14 +1907,109 @@ export function getLinterPolicyForCwd(
 			cwd,
 			context,
 			frameworkHints: policy?.frameworkHints ?? null,
+			...(selected === undefined ? {} : { selected }),
 		},
 	});
 	return policy;
 }
 
+/** Lint runner id -> its fixer, for autofix that follows `lint.tools`. */
+const LINT_RUNNER_FIXERS: ReadonlyMap<string, AutofixToolName> = new Map([
+	["eslint", "eslint"],
+	["oxlint", "oxlint"],
+	["biome-check-json", "biome"],
+	["ruff-lint", "ruff"],
+	["stylelint", "stylelint"],
+	["sqlfluff", "sqlfluff"],
+	["rubocop", "rubocop"],
+	["ktlint", "ktlint"],
+	["rust-clippy", "rust-clippy"],
+	["dart-analyze", "dart-analyze"],
+	["golangci-lint", "golangci-lint"],
+	["detekt", "detekt"],
+	["markdownlint", "markdownlint"],
+]);
+
+/** True when `name` is an autofix tool whose fix is safe in the pipeline. */
+function isSafeAutofixTool(name: string): name is AutofixToolName {
+	return AUTOFIX_CAPABILITIES.get(name)?.safePipelineAutofix === true;
+}
+
+/**
+ * The policy's fixers, validated: its `autofix.tools` (unknown or unsafe
+ * names drop with `PILENS_CFG_0005`), or its linters' fixers.
+ */
+function configuredAutofixTools(
+	chosen: NonNullable<ReturnType<typeof configuredAutofixOf>>,
+	match: FilePolicyResolution,
+): AutofixToolName[] {
+	const tools: AutofixToolName[] = [];
+	const records: MigrationRecord[] = [];
+	chosen.tools.forEach((name, index) => {
+		const fixer = chosen.from === "lint" ? LINT_RUNNER_FIXERS.get(name) : name;
+		if (fixer !== undefined && isSafeAutofixTool(fixer)) {
+			if (!tools.includes(fixer)) tools.push(fixer);
+			return;
+		}
+		// A lint runner with no fixer is not a mistake; an autofix name is.
+		if (chosen.from === "lint") return;
+		const key = match.match.policy.key;
+		const pointer = `${languagePointer(key, "autofix", "tools")}/${index}`;
+		const decidedBy =
+			match.resolution.provenance.get(pointer) ??
+			match.resolution.provenance.get(languagePointer(key, "autofix", "tools"));
+		const file =
+			decidedBy?.file ?? match.resolution.documents.at(-1)?.file ?? "";
+		records.push({
+			code: "PILENS_CFG_0005",
+			file,
+			key: pointer,
+			subject: migrationSubject(file, pointer),
+			reason: `languages.${key}.autofix.tools names an id that is not a safe autofix tool; dropped`,
+			...(decidedBy?.tier ? { tier: decidedBy.tier } : {}),
+		});
+	});
+	if (records.length > 0) reportPiLensConfigRecords(records);
+	return tools;
+}
+
+/**
+ * THE autofix policy for a file: the default policy below, unless the file's
+ * `languages.<id>` policy (#195) chooses its fixers (`configuredAutofixOf`).
+ * A chosen list replaces the default's preference outright: exactly those
+ * fixers run, in that order, each only if available; `[]` runs none. Both
+ * autofix paths (the write pipeline and the deferred drain) ask here.
+ *
+ * Narrow only: the global `autofix.enabled` / `--no-autofix` gate runs
+ * before any policy is read, so a policy can remove fixing but never turn
+ * it back on.
+ */
 export function getAutofixPolicyForFile(
 	filePath: string,
 	context: AutofixPolicyContext = {},
+): AutofixPolicy | undefined {
+	const base = defaultAutofixPolicyForFile(filePath, context);
+	const match = languagePolicyForFilePath(filePath);
+	const chosen = configuredAutofixOf(match?.match.policy);
+	if (!match || chosen === undefined) return base;
+	const tools = configuredAutofixTools(chosen, match);
+	const toolNames = [...(base?.toolNames ?? [])];
+	for (const tool of tools) if (!toolNames.includes(tool)) toolNames.push(tool);
+	return {
+		toolNames,
+		preferredTools: tools,
+		...(tools[0] === undefined ? {} : { defaultTool: tools[0] }),
+		defaultWhenUnconfigured: false,
+		gate: "config-first",
+		safe: true,
+		// The dedup boundary follows the tool: dart-analyze fixes per project.
+		...(tools.includes("dart-analyze") ? { scope: "dart-project" } : {}),
+	};
+}
+
+function defaultAutofixPolicyForFile(
+	filePath: string,
+	context: AutofixPolicyContext,
 ): AutofixPolicy | undefined {
 	const ext = path.extname(filePath).toLowerCase();
 
@@ -2733,10 +2883,28 @@ export function getJstsLintPolicy(
 	};
 }
 
-export function getJstsLintPolicyForCwd(cwd: string): JstsLintPolicy {
-	return getJstsLintPolicy({
+/**
+ * `selected` (`languages.<id>.lint.tools`, #195) replaces the detected
+ * preference; biome's "another linter is configured" deferral is off when
+ * the list names biome.
+ */
+export function getJstsLintPolicyForCwd(
+	cwd: string,
+	selected?: readonly string[],
+): JstsLintPolicy {
+	const policy = getJstsLintPolicy({
 		hasEslintConfig: hasToolConfig("eslint", cwd),
 		hasOxlintConfig: hasToolConfig("oxlint", cwd),
 		hasBiomeConfig: hasToolConfig("biome", cwd),
 	});
+	if (selected === undefined) return policy;
+	const preferredRunners = explicitPreferred<JstsLintRunnerName>(
+		["eslint", "oxlint", "biome-check-json"],
+		selected,
+	);
+	return {
+		...policy,
+		preferredRunners,
+		hasExplicitNonBiomeLinter: !preferredRunners.includes("biome-check-json"),
+	};
 }

@@ -296,6 +296,83 @@ function dispatchNamespace(): ConfigSchemaNode {
 	};
 }
 
+/**
+ * The `languages.<id>` entry (#195). Typed leaves (a wrong type drops at the
+ * leaf with `PILENS_CFG_0005`); domains merge field by field, lists
+ * `replace`. Ids are each consumer's to validate, as `lspServerEntryNode`
+ * explains.
+ */
+function languageEntryNode(): ConfigSchemaNode {
+	const flag = (): ConfigSchemaNode => ({
+		type: "boolean",
+		[STABILITY_TIER_KEY]: "experimental",
+	});
+	const id = (): ConfigSchemaNode => ({
+		type: "string",
+		[STABILITY_TIER_KEY]: "experimental",
+	});
+	return {
+		type: "object",
+		additionalProperties: true,
+		[STABILITY_TIER_KEY]: "experimental",
+		properties: {
+			files: {
+				type: "array",
+				items: { type: "string", [STABILITY_TIER_KEY]: "experimental" },
+				[MERGE_STRATEGY_KEY]: "replace",
+				[STABILITY_TIER_KEY]: "experimental",
+			},
+			lsp: {
+				type: "object",
+				additionalProperties: true,
+				[STABILITY_TIER_KEY]: "experimental",
+				properties: { enabled: flag(), server: id() },
+			},
+			lint: {
+				type: "object",
+				additionalProperties: true,
+				[STABILITY_TIER_KEY]: "experimental",
+				properties: {
+					enabled: flag(),
+					// An ordered list: the nearest tier supplies the whole list.
+					tools: {
+						type: "array",
+						items: { type: "string", [STABILITY_TIER_KEY]: "experimental" },
+						[MERGE_STRATEGY_KEY]: "replace",
+						[STABILITY_TIER_KEY]: "experimental",
+					},
+					mode: {
+						type: "string",
+						enum: ["all", "fallback"],
+						[STABILITY_TIER_KEY]: "experimental",
+					},
+				},
+			},
+			format: {
+				type: "object",
+				additionalProperties: true,
+				[STABILITY_TIER_KEY]: "experimental",
+				properties: { enabled: flag(), formatter: id() },
+			},
+			autofix: {
+				type: "object",
+				additionalProperties: true,
+				[STABILITY_TIER_KEY]: "experimental",
+				properties: {
+					enabled: flag(),
+					// An ordered list: the nearest tier supplies the whole list.
+					tools: {
+						type: "array",
+						items: { type: "string", [STABILITY_TIER_KEY]: "experimental" },
+						[MERGE_STRATEGY_KEY]: "replace",
+						[STABILITY_TIER_KEY]: "experimental",
+					},
+				},
+			},
+		},
+	};
+}
+
 /** The shared public rule policy shape (#4226). */
 function rulePolicyEntryNode(): ConfigSchemaNode {
 	return {
@@ -458,6 +535,11 @@ function buildConfigSchema(): ConfigSchemaNode {
 
 	properties[LSP_NAMESPACE_KEY] = lspNamespace();
 	properties.dispatch = dispatchNamespace();
+	properties.languages = {
+		type: "object",
+		additionalProperties: languageEntryNode(),
+		[STABILITY_TIER_KEY]: "experimental",
+	};
 
 	properties[CONFIG_SCHEMA_ANCHOR_KEY] = {
 		type: "string",

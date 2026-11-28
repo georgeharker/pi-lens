@@ -883,6 +883,17 @@ export const SESSION_STATE_REGISTRY: SessionStateEntry[] = [
 			"Bare cached commands return without a spawnability check, so a PATH change between sessions must clear this positive cache.",
 	},
 	{
+		id: "language-policy-for-file:languageConfigCache",
+		module: "language-policy-for-file.ts",
+		state: "languageConfigCache",
+		policy: "process_lifetime",
+		ownerKey:
+			"process-wide: one resolved `languages` map (#195) per config-owning directory and global-config path",
+		resetName: "_resetLanguagePolicyCacheForTests",
+		reason:
+			"Every read revalidates the entry by the stat signature (mtime and size, or absence) of every path the resolution reads (`piLensConfigCandidates`), so an edited, created or removed config file is a miss and the cache cannot serve an answer the disk no longer gives. A session boundary has nothing to invalidate. `tests/clients/language-policy-cache.test.ts` covers the hit, the three kinds of change, and the reset.",
+	},
+	{
 		id: "language-profile:topology-derived-cache",
 		module: "language-profile.ts",
 		state: "languageProfileCache",
@@ -2614,6 +2625,7 @@ export const SESSION_STATE_SYMBOL_COUNTS: Readonly<Record<string, number>> = {
 	"instance-registry.ts": 0,
 	"jscpd-client.ts": 2,
 	"knip-client.ts": 5,
+	"language-policy-for-file.ts": 1,
 	"language-profile.ts": 1,
 	"language-registry.ts": 3,
 	"latency-logger.ts": 2,

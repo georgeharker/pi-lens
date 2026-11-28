@@ -555,6 +555,74 @@
       },
       "x-stability": "experimental"
     },
+    "languages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "x-stability": "experimental",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": { "type": "string", "x-stability": "experimental" },
+            "x-merge-strategy": "replace",
+            "x-stability": "experimental"
+          },
+          "lsp": {
+            "type": "object",
+            "additionalProperties": true,
+            "x-stability": "experimental",
+            "properties": {
+              "enabled": { "type": "boolean", "x-stability": "experimental" },
+              "server": { "type": "string", "x-stability": "experimental" }
+            }
+          },
+          "lint": {
+            "type": "object",
+            "additionalProperties": true,
+            "x-stability": "experimental",
+            "properties": {
+              "enabled": { "type": "boolean", "x-stability": "experimental" },
+              "tools": {
+                "type": "array",
+                "items": { "type": "string", "x-stability": "experimental" },
+                "x-merge-strategy": "replace",
+                "x-stability": "experimental"
+              },
+              "mode": {
+                "type": "string",
+                "enum": ["all", "fallback"],
+                "x-stability": "experimental"
+              }
+            }
+          },
+          "format": {
+            "type": "object",
+            "additionalProperties": true,
+            "x-stability": "experimental",
+            "properties": {
+              "enabled": { "type": "boolean", "x-stability": "experimental" },
+              "formatter": { "type": "string", "x-stability": "experimental" }
+            }
+          },
+          "autofix": {
+            "type": "object",
+            "additionalProperties": true,
+            "x-stability": "experimental",
+            "properties": {
+              "enabled": { "type": "boolean", "x-stability": "experimental" },
+              "tools": {
+                "type": "array",
+                "items": { "type": "string", "x-stability": "experimental" },
+                "x-merge-strategy": "replace",
+                "x-stability": "experimental"
+              }
+            }
+          }
+        }
+      },
+      "x-stability": "experimental"
+    },
     "$schema": {
       "type": "string",
       "description": "Identity anchor naming the schema version this config was written against.",

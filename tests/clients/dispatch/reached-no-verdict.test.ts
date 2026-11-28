@@ -29,6 +29,9 @@ describe("reachedNoVerdict (#4484 round 3)", () => {
 			"dialect-unsupported",
 			"covered-by-primary",
 			"disabled-by-config",
+			// `languages.<id>.lint` (#195): an operator decision about the file, the
+			// same standing as the denial above.
+			"not-configured-for-language",
 		];
 		for (const skipReason of RUNNER_SKIP_REASONS) {
 			expect(

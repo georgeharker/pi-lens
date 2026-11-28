@@ -73,7 +73,7 @@ const htmlhintRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "htmlhint");
-		const policy = getLinterPolicyForCwd(ctx.filePath, cwd);
+		const policy = getLinterPolicyForCwd(ctx.filePath, cwd, ctx.configuredLint?.tools);
 		if (policy && !policy.preferredRunners.includes("htmlhint")) {
 			return skipped("not-preferred");
 		}

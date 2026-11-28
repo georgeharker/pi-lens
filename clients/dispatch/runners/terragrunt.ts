@@ -154,7 +154,7 @@ const terragruntRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "terragrunt");
-		const policy = getLinterPolicyForCwd(ctx.filePath, cwd);
+		const policy = getLinterPolicyForCwd(ctx.filePath, cwd, ctx.configuredLint?.tools);
 		if (policy && !policy.preferredRunners.includes("terragrunt"))
 			return skipped("not-preferred");
 

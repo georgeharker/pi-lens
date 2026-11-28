@@ -89,6 +89,14 @@ import {
 	DISABLED_BY_CONFIG_SKIP_REASON,
 	disabledRunnerIdsFor,
 } from "./disabled-runners.js";
+import {
+	configuredLintFor,
+	continuesPastSuccess,
+	endsLintFallback,
+	isUnconfiguredLinter,
+	NOT_CONFIGURED_FOR_LANGUAGE_SKIP_REASON,
+	orderLintFallback,
+} from "./language-lint.js";
 import { getToolProfile } from "./tool-profile.js";
 import { classifyPreExisting, preEditSeedFactKey } from "./pre-edit-seed.js";
 import {
@@ -319,6 +327,9 @@ export function createDispatchContext(
 		normalizedProjectRoot,
 	);
 	const disabledRunnerIds = disabledRunnerIdsFor(policyConfig);
+	// Same resolution again: the file's `languages.<id>.lint` policy (#195)
+	// follows the edited file's config owner like the denial list does.
+	const configuredLint = configuredLintFor(policyConfig, absoluteFilePath);
 
 	return {
 		filePath: normalizedFilePath,
@@ -340,6 +351,7 @@ export function createDispatchContext(
 		ruleThreshold: (ruleId) =>
 			ruleThresholdFromResolution(policyConfig, ruleId),
 		...(disabledRunnerIds !== undefined && { disabledRunnerIds }),
+		...(configuredLint !== undefined && { configuredLint }),
 		blockingOnly,
 		modifiedRanges,
 		writeIndex,
@@ -1171,6 +1183,42 @@ export function runnerDispatchContext(
  * Groups themselves are run in parallel by dispatchForFile, so this
  * function must NOT mutate shared state.
  */
+/**
+ * Record a config-decided skip (`dispatch.disabledRunners`,
+ * `selection.<key>.linters`): a zero-duration `skipped` latency row with its
+ * stated reason, in the group's result and the latency log.
+ */
+function recordConfigSkip(
+	latencies: RunnerLatency[],
+	ctx: DispatchContext,
+	runnerId: string,
+	runnerStart: number,
+	skipReason:
+		| typeof DISABLED_BY_CONFIG_SKIP_REASON
+		| typeof NOT_CONFIGURED_FOR_LANGUAGE_SKIP_REASON,
+): void {
+	latencies.push({
+		runnerId,
+		startTime: runnerStart,
+		endTime: Date.now(),
+		durationMs: 0,
+		status: "skipped",
+		diagnosticCount: 0,
+		semantic: "none",
+		skipReason,
+	});
+	logLatency({
+		type: "runner",
+		filePath: ctx.filePath,
+		runnerId,
+		durationMs: 0,
+		status: "skipped",
+		diagnosticCount: 0,
+		semantic: "none",
+		metadata: { skipReason },
+	});
+}
+
 async function runGroup(
 	ctx: DispatchContext,
 	group: RunnerGroup,
@@ -1286,27 +1334,28 @@ async function runGroup(
 		// neither a failure nor a runner that reached no verdict: a fallback
 		// group moves on to its next member as for any other skip.
 		if (ctx.disabledRunnerIds?.has(runnerId)) {
-			const runnerEnd = Date.now();
-			latencies.push({
+			recordConfigSkip(
+				latencies,
+				ctx,
 				runnerId,
-				startTime: runnerStart,
-				endTime: runnerEnd,
-				durationMs: 0,
-				status: "skipped",
-				diagnosticCount: 0,
-				semantic: "none",
-				skipReason: DISABLED_BY_CONFIG_SKIP_REASON,
-			});
-			logLatency({
-				type: "runner",
-				filePath: ctx.filePath,
+				runnerStart,
+				DISABLED_BY_CONFIG_SKIP_REASON,
+			);
+			continue;
+		}
+
+		// `languages.<id>.lint` (#195): the operator chose other linters for this
+		// language. Same shape as the denial above (before `when`/`run`, a stated
+		// reason, a fallback group moves on); only selectable linters are
+		// governed, so non-lint runners never reach this skip.
+		if (isUnconfiguredLinter(ctx.configuredLint, runnerId)) {
+			recordConfigSkip(
+				latencies,
+				ctx,
 				runnerId,
-				durationMs: 0,
-				status: "skipped",
-				diagnosticCount: 0,
-				semantic: "none",
-				metadata: { skipReason: DISABLED_BY_CONFIG_SKIP_REASON },
-			});
+				runnerStart,
+				NOT_CONFIGURED_FOR_LANGUAGE_SKIP_REASON,
+			);
 			continue;
 		}
 
@@ -1601,8 +1650,17 @@ async function runGroup(
 			hadBlocker = true;
 		}
 
-		// mode:"fallback" — stop at first successful runner
-		if (group.mode === "fallback" && result.status === "succeeded") {
+		// mode:"fallback" — stop at first successful runner. Not for a listed
+		// linter under `lint.mode: "all"`: the operator listed every linter that
+		// should run, and the unlisted ones already skipped above. Under
+		// `lint.mode: "fallback"` a listed linter that answered with findings
+		// also ends the group: it was available (#195).
+		if (
+			group.mode === "fallback" &&
+			((result.status === "succeeded" &&
+				!continuesPastSuccess(ctx.configuredLint, runnerId)) ||
+				endsLintFallback(ctx.configuredLint, runnerId, result))
+		) {
 			break;
 		}
 	}
@@ -1680,6 +1738,9 @@ export async function dispatchForFile(
 	const _overallStart = Date.now();
 	const generated = skipGeneratedFile(ctx);
 	if (generated) return generated;
+	// `languages.<id>.lint.mode: "fallback"` (#195): the listed linters run
+	// in one sequential group, in the listed order. A no-op otherwise.
+	groups = orderLintFallback(groups, ctx.configuredLint);
 	if (ctx.analysisRootMode === "adopted") {
 		// #4242 phase A (per-file linters): an adopted root runs ONLY the explicit
 		// admission list. LSP delegates execution trust to the client registry;

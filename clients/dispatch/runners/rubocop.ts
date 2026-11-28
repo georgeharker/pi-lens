@@ -112,7 +112,7 @@ const rubocopRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "rubocop");
-		const policy = getLinterPolicyForCwd(ctx.filePath, cwd);
+		const policy = getLinterPolicyForCwd(ctx.filePath, cwd, ctx.configuredLint?.tools);
 		if (policy && !policy.preferredRunners.includes("rubocop")) {
 			return skipped("not-preferred");
 		}

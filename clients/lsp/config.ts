@@ -126,6 +126,13 @@ import {
 	type LspRootFallback,
 } from "./server.js";
 import { DEFAULT_LSP_SERVER_ROLE, isAuxiliary } from "./server-traits.js";
+import {
+	configuredLspServers,
+	type LanguageConfig,
+	languageConfigOf,
+	languagePointer,
+	type LanguagePolicy,
+} from "../language-config.js";
 
 // --- Types ---
 
@@ -195,6 +202,12 @@ export interface LSPConfig {
 	warmFiles?: string[];
 	/** Non-enumerable source map attached by loadLSPConfig. */
 	readonly __provenance?: ProvenanceMap;
+	/**
+	 * Non-enumerable `languages` projection (#195) attached by `lspConfigOf`,
+	 * from the SAME value as the rest of this config. Not validated against the
+	 * registry yet: `compileLspRegistry` keeps only a usable `lsp.server`.
+	 */
+	readonly __languages?: LanguageConfig;
 }
 
 /**
@@ -209,6 +222,12 @@ export interface RegisteredLSPConfig {
 	registeredServers: LSPServerInfo[];
 	disabledServerIds: Set<string>;
 	serverOverrides: Map<string, ServerInitOverride>;
+	/**
+	 * The opt-in `languages` policies (#195), each `lsp.server` kept only when
+	 * it names a registered LANGUAGE server. Absent = the default selection for
+	 * every file (`clients/language-config.ts`).
+	 */
+	languages?: LanguageConfig;
 }
 
 // --- Config Loading ---
@@ -511,11 +530,16 @@ export async function loadLSPConfig(
 		value: resolution.provenance,
 		enumerable: false,
 	});
+	// `lspConfigOf` already attached `__languages`; this resolution-backed
+	// pass exists for the records, which need the provenance for file/tier.
+	const languages = languageConfigOf(resolution);
 	if (reporting) {
 		reportPiLensConfigRecords([
 			...resolution.records,
 			...coversClaimRecords(resolution, configProblems),
 			...disabledServerRecords(resolution, configProblems),
+			...languages.records,
+			...languageLspRecords(resolution, languages.config, config),
 		]);
 	}
 	recordCoversUnvalidated(resolution, configProblems);
@@ -862,6 +886,22 @@ export function lspConfigOf(
 	if (provenance) {
 		Object.defineProperty(config, "__provenance", {
 			value: provenance,
+			enumerable: false,
+		});
+	}
+	// The `languages` namespace (#195) rides the same projection, so the
+	// session registry and the `effective_config` query read it from one
+	// definition. Its records are the loader's to report (`loadLSPConfig`),
+	// not this pure projection's.
+	const languages = languageConfigOf({
+		value,
+		provenance: provenance ?? new Map(),
+		records: [],
+		documents: [],
+	}).config;
+	if (languages) {
+		Object.defineProperty(config, "__languages", {
+			value: languages,
 			enumerable: false,
 		});
 	}
@@ -1519,12 +1559,106 @@ export function compileLspRegistry(
 			},
 		};
 	});
+	const languages = usableLanguageServers(config.__languages, [
+		...overriddenBuiltins,
+		...customServers,
+	]);
 	return {
 		customServers,
 		registeredServers: overriddenBuiltins,
 		disabledServerIds,
 		serverOverrides,
+		...(languages === undefined ? {} : { languages }),
 	};
+}
+
+/**
+ * Why a `languages.<id>.lsp.server` cannot be honored. One predicate for
+ * the records and the compiler, so a reported id is the id the gate drops.
+ */
+function unselectableLspReason(
+	known: boolean,
+	auxiliary: boolean,
+): "unknown" | "auxiliary" | undefined {
+	if (!known) return "unknown";
+	if (auxiliary) return "auxiliary";
+	return undefined;
+}
+
+/**
+ * Marks an unknown or auxiliary `lsp.server` `unusable`: the language gets
+ * no server rather than silently reverting to the default (#195).
+ */
+function usableLanguageServers(
+	languages: LanguageConfig | undefined,
+	servers: readonly LSPServerInfo[],
+): LanguageConfig | undefined {
+	if (!languages) return undefined;
+	const byId = new Map(servers.map((server) => [server.id, server]));
+	const entries = new Map<string, LanguagePolicy>();
+	for (const [key, policy] of languages.entries) {
+		const id = policy.lsp?.server;
+		if (id === undefined) {
+			entries.set(key, policy);
+			continue;
+		}
+		const server = byId.get(id);
+		const why = unselectableLspReason(
+			server !== undefined,
+			server !== undefined && isAuxiliary(server),
+		);
+		entries.set(
+			key,
+			why === undefined
+				? policy
+				: { ...policy, lsp: { ...policy.lsp, unusable: true } },
+		);
+	}
+	return { entries };
+}
+
+/**
+ * `PILENS_CFG_0005` records for a `languages.<id>.lsp.server` that names no
+ * server, or names an auxiliary scanner (which attaches by its own rules and
+ * is never a file's primary). Known = a built-in id or an `lsp.servers`
+ * entry. The record points at the field and never quotes its value
+ * (`MigrationRecord.reason`).
+ */
+function languageLspRecords(
+	resolution: PiLensConfigResolution,
+	languages: LanguageConfig | undefined,
+	config: LSPConfig,
+): MigrationRecord[] {
+	if (!languages) return [];
+	const records: MigrationRecord[] = [];
+	for (const [key, policy] of languages.entries) {
+		const id = policy.lsp?.server;
+		if (id === undefined) continue;
+		const builtin = getServerById(id);
+		const custom = config.servers?.[id];
+		// A custom entry always registers as a language server
+		// (`DEFAULT_LSP_SERVER_ROLE`), so only a built-in can be auxiliary.
+		const why = unselectableLspReason(
+			builtin !== undefined || custom !== undefined,
+			builtin !== undefined && isAuxiliary(builtin),
+		);
+		if (why === undefined) continue;
+		const pointer = languagePointer(key, "lsp", "server");
+		const decidedBy = resolution.provenance.get(pointer);
+		const file = decidedBy?.file ?? resolution.documents.at(-1)?.file ?? "";
+		records.push({
+			code: "PILENS_CFG_0005",
+			file,
+			key: pointer,
+			subject: migrationSubject(file, pointer),
+			reason:
+				why === "unknown"
+					? `languages.${boundedKeyLabel(key)}.lsp.server names an id that is not a known LSP server; that language gets no language server`
+					: `languages.${boundedKeyLabel(key)}.lsp.server names an auxiliary server, which cannot be a primary; that language gets no language server`,
+			...(decidedBy?.tier ? { tier: decidedBy.tier } : {}),
+		});
+	}
+	return records;
 }
 
 /**
@@ -1627,7 +1761,30 @@ export type ServerSelectionReason =
 	| "selected"
 	| "disabled-by-config"
 	| "extension-mismatch"
-	| "path-filter";
+	| "path-filter"
+	/** The server the file's `languages.<id>.lsp.server` names. */
+	| "configured-for-language"
+	/**
+	 * A language server the file's `languages.<id>.lsp` policy does not name
+	 * (another server is the language's primary, or `enabled` is false).
+	 */
+	| "not-configured-for-language";
+
+/** The reasons under which a server attaches to the file. */
+function isAttachReason(reason: ServerSelectionReason): boolean {
+	return reason === "selected" || reason === "configured-for-language";
+}
+
+/**
+ * The servers the file's `languages.<id>.lsp` policy chooses, or undefined
+ * for the default path. One lookup per call, shared by every server's gate.
+ */
+function explicitLspFor(
+	config: RegisteredLSPConfig,
+	filePath: string,
+): readonly string[] | undefined {
+	return configuredLspServers(config.languages, filePath)?.ids;
+}
 
 /** One server's selection decision for a file. */
 export interface ServerSelection {
@@ -1664,8 +1821,18 @@ function selectionReason(
 	filePath: string,
 	ext: string,
 	base: string,
+	explicit?: readonly string[],
 ): ServerSelectionReason {
 	if (config.disabledServerIds.has(server.id)) return "disabled-by-config";
+	// A language policy decides LANGUAGE servers outright: the named one
+	// attaches regardless of extension or `pathFilter` (the operator named the
+	// file's language, which is the fact those gates approximate), and any other
+	// does not attach at all. Auxiliary scanners are out of the policy's reach
+	// and fall through to their own match.
+	if (explicit !== undefined) {
+		if (explicit.includes(server.id)) return "configured-for-language";
+		if (!isAuxiliary(server)) return "not-configured-for-language";
+	}
 	return fileMatchReason(server, filePath, ext, base);
 }
 
@@ -1684,9 +1851,17 @@ export function explainServersForFile(
 	config: RegisteredLSPConfig = getConfigForFile(filePath),
 ): ServerSelection[] {
 	const { ext, base } = fileMatchKeys(filePath);
+	const explicit = explicitLspFor(config, filePath);
 	return registeredServers(config, LSP_SERVERS).map((server) => {
-		const reason = selectionReason(server, config, filePath, ext, base);
-		return { server, selected: reason === "selected", reason };
+		const reason = selectionReason(
+			server,
+			config,
+			filePath,
+			ext,
+			base,
+			explicit,
+		);
+		return { server, selected: isAttachReason(reason), reason };
 	});
 }
 
@@ -1694,10 +1869,25 @@ export function getServersForFileWithConfig(filePath: string): LSPServerInfo[] {
 	if (serversForFileOverride) return serversForFileOverride(filePath);
 	const config = getConfigForFile(filePath);
 	const { ext, base } = fileMatchKeys(filePath);
-	return registeredServers(config, LSP_SERVERS).filter(
-		(server) =>
-			selectionReason(server, config, filePath, ext, base) === "selected",
+	const explicit = explicitLspFor(config, filePath);
+	const attached = registeredServers(config, LSP_SERVERS).filter((server) =>
+		isAttachReason(
+			selectionReason(server, config, filePath, ext, base, explicit),
+		),
 	);
+	if (explicit === undefined) return attached;
+	// Explicit order: the listed language servers in the slot's order (so the
+	// first is the file's primary, `primaryServerEntry`), then the auxiliaries
+	// in registry order. The entries are the registry's own objects, never
+	// copies (#3952).
+	const rank = (server: LSPServerInfo): number => {
+		const index = explicit.indexOf(server.id);
+		return index === -1 ? explicit.length : index;
+	};
+	return attached
+		.map((server, position) => ({ server, position }))
+		.sort((a, b) => rank(a.server) - rank(b.server) || a.position - b.position)
+		.map(({ server }) => server);
 }
 
 /**

@@ -131,6 +131,27 @@ that server covers instead of double-reporting the same findings.
   array — a project value replaces the user-level value for that server;
   fields are never united across tiers.
 
+### `languages.<language>` — per-language settings (experimental)
+
+`languages` lets you choose the language server, the linters, the formatter,
+and the autofix tools for a language yourself. It is opt-in: a language you
+do not list, and any setting you leave out, keeps the automatic choice.
+
+```jsonc
+"languages": {
+  "zsh": { "files": [".zshrc"], "lsp": { "server": "shuck" }, "format": { "formatter": "shfmt" } },
+  "typescript": { "lint": { "tools": ["eslint", "oxlint"], "mode": "all" } },
+  "python": { "format": { "enabled": false } }
+}
+```
+
+Keys are language names such as `typescript`, `python`, or `zsh`. pi-lens
+combines config files one field at a time, and the nearest file wins each
+field. `lsp.disabledServers`, `dispatch.disabledRunners`, and a top-level
+`autofix.enabled: false` still win over `languages`. A project can set it
+without pi project trust. [Per-language settings](languages.md) explains the
+names, how pi-lens finds the entry for a file, and how to check what applies.
+
 **Some settings are global-only.** A handful of switches — `lsp.enabled`
 (`--no-lsp`), `tests.enabled`, `delta.enabled` and the other session-wide
 toggles — are decided once for the machine, not per project, so writing one in a

@@ -648,6 +648,9 @@ describe("dispatch.disabledRunners — dispatch", () => {
 		// tool failed. `not-installed` and `install-disabled` stay failures.
 		"not-configured",
 		"not-preferred",
+		// `languages.<id>.lint` (#195): the operator chose other linters for the
+		// language, so the runner had nothing to check, like `not-preferred`.
+		"not-configured-for-language",
 	];
 	it.each(
 		RUNNER_SKIP_REASONS.filter(

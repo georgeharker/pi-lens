@@ -387,8 +387,9 @@ export const PROJECT_SCOPED_LENS_FLAGS: readonly LensFlagSpec[] =
  * second hand-maintained literal set inline in the loader. Adding a future
  * top-level namespace is a one-line edit HERE; adding a flag needs no edit at
  * all (its section is registry-derived via {@link flagConfigSectionKeys}).
- * Do NOT speculatively pre-add keys no loader reads yet (e.g. `languages` is
- * #195's job) — this is an extension point, not a wishlist.
+ * Do NOT speculatively pre-add keys no loader reads yet — this is an
+ * extension point, not a wishlist. (`languages`, #195, joined with its
+ * loader, `clients/language-config.ts`.)
  *
  * `actionableWarnings` is intentionally absent: it is already a flag section
  * (`actionableWarnings.enabled`, `.autoFix.enabled`, ...) so it is covered by
@@ -403,6 +404,9 @@ export const GLOBAL_NON_FLAG_CONFIG_SECTIONS: readonly string[] = [
 	// write. Read at both scopes; a project file's list is honored only when pi
 	// trusts the project (`clients/opaque-mutation-scan.ts`).
 	"opaqueScan",
+	// #195: opt-in per-language tool policy (`clients/language-config.ts`).
+	// Read at both scopes.
+	"languages",
 	"$schema",
 ];
 
@@ -472,6 +476,8 @@ export const PROJECT_NON_FLAG_CONFIG_SECTIONS: readonly string[] = [
 	"startup",
 	// #5793: also a global section; see `GLOBAL_NON_FLAG_CONFIG_SECTIONS`.
 	"opaqueScan",
+	// #195: also a global section; see `GLOBAL_NON_FLAG_CONFIG_SECTIONS`.
+	"languages",
 	// `tools` is MIXED-SCOPE, and belongs here for the project-scoped half
 	// (#3112). `tools.<name>.enabled` is not a registry flag at all: it is
 	// hand-parsed by `readToolConfig` against `TOOL_REGISTRY` in BOTH loaders,

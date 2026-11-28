@@ -161,6 +161,9 @@ describe("oxlint runner", () => {
 			"install-disabled",
 			"not-configured",
 			"not-preferred",
+			// `languages.<id>.lint` (#195): the operator listed other linters for
+			// this language, a stated skip and no failed tool.
+			"not-configured-for-language",
 			// #5258 r2: a tool that may be installed but was not usable says why.
 			"probe-incomplete",
 			"probe-rejected",

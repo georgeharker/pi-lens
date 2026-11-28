@@ -264,6 +264,10 @@ export function lspPrimaryCoversFile(
 	runnerId: string,
 ): PrimaryRunnerCoverage | undefined {
 	if (ctx.pi?.getFlag?.("no-lsp")) return undefined;
+	// An explicit `selection.<key>.linters` slot that lists this runner wins
+	// over any claim: covers is the default path's dedup, and the operator
+	// asked for this linter by name (`clients/dispatch/selected-linters.ts`).
+	if (ctx.configuredLint?.tools.includes(runnerId)) return undefined;
 	const primary = getServersForFileWithConfig(ctx.filePath).find(
 		(s) => !isAuxiliary(s),
 	);

@@ -118,7 +118,7 @@ const oxlintRunner: RunnerDefinition = {
 		const resolution = resolveRunnerCwdWithReason(ctx, "oxlint");
 		const cwd = resolution.cwd;
 		const packageDir = resolution.packageDir ?? cwd;
-		const policy = getJstsLintPolicyForCwd(packageDir);
+		const policy = getJstsLintPolicyForCwd(packageDir, ctx.configuredLint?.tools);
 		if (!policy.preferredRunners.includes("oxlint")) {
 			return skipped("not-preferred");
 		}

@@ -404,7 +404,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/config-core/normalize.ts": 2,
 		"clients/config-core/resolve.ts": 2,
 		"clients/config-locations.ts": 5,
-		"clients/config-resolve.ts": 14,
+		// 14 -> 12 (#195): `collectPiLensConfigDocuments` reads one candidate
+		// list (`piLensConfigCandidates`), so the global tier's duplicate
+		// read-error arm is gone.
+		"clients/config-resolve.ts": 12,
 		"clients/config-warn.ts": 18,
 		"clients/dead-code-client.ts": 4,
 		"clients/degradation-ledger.ts": 10,
@@ -594,8 +597,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/config-locations.ts": 4,
 		// 1 -> 2 (#5291): `CANONICAL_PROJECT_CONFIG_LOCATIONS` drops the legacy
 		// spec from the shared list, an `Array.prototype.filter` call, not a
-		// delivery filter.
-		"clients/config-resolve.ts": 2,
+		// delivery filter. 2 -> 1 (#195): the per-directory walk collects by
+		// candidate (`piLensConfigCandidates`), so its `.filter` on the
+		// config-bearing directories is gone.
+		"clients/config-resolve.ts": 1,
 		"clients/deadline-utils.ts": 1,
 		"clients/debug-handles.ts": 1,
 		"clients/debug-heap.ts": 1,
@@ -1918,13 +1923,18 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/cache-observability.ts": 18,
 		"clients/call-graph.ts": 6,
 		"clients/child-unref.ts": 6,
-		"clients/config-resolve.ts": 11,
+		// 11 -> 9 (#195): one candidate loop reads every config document, so the
+		// global tier's duplicate `outcome.status` checks are gone.
+		"clients/config-resolve.ts": 9,
 		"clients/dead-code-client.ts": 3,
 		// #5413: the reset-dropped rerun's answer is a `status: "skipped"`
 		// `RunnerResult`, the same member sense as every row here.
 		"clients/dispatch/collect-later-tier.ts": 1,
 		// 34 -> 35 (#5413): the spawn-timeout cooldown skip in `runRunner`.
 		"clients/dispatch/dispatcher.ts": 37,
+		// #195: `endsLintFallback` reads a listed linter's `RunnerResult.status`,
+		// the same member sense as every row here.
+		"clients/dispatch/language-lint.ts": 1,
 		// 1 -> 3 (#5553): the staged read leaves out a lane row whose `status`
 		// is skipped for a stated cause, and names the others' `status`.
 		// 3 -> 4 (#5621): `ensureSeedCopyExcluded` reads the exit `status` of its

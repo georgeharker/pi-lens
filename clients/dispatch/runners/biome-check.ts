@@ -278,7 +278,7 @@ const biomeCheckJsonRunner: RunnerDefinition = {
 
 	async run(ctx: DispatchContext): Promise<RunnerResult> {
 		const cwd = resolveRunnerCwd(ctx, "biome");
-		const policy = getJstsLintPolicyForCwd(cwd);
+		const policy = getJstsLintPolicyForCwd(cwd, ctx.configuredLint?.tools);
 
 		// Defer to ESLint/oxlint if the project has explicitly configured one —
 		// biome runs as the default linter only when no alternative is present.

@@ -54,6 +54,10 @@ import {
 } from "./config-resolve.js";
 import { getToolPlan } from "./dispatch/plan.js";
 import { disabledRunnersOf } from "./dispatch/disabled-runners.js";
+import {
+	configuredLintForFile,
+	isUnconfiguredLinter,
+} from "./dispatch/language-lint.js";
 import { getAvailableRunners } from "./dispatch/integration.js";
 import { detectFileKind } from "./file-kinds.js";
 import { getGlobalPiLensDir } from "./file-utils.js";
@@ -79,6 +83,14 @@ import { isSameOrWithin } from "./lsp/server.js";
 import { homeRelativePath, resolveHostToolPath } from "./path-utils.js";
 import { resolveToolCwd } from "./tool-cwd.js";
 import { compareOrdinal } from "./string-utils.js";
+import {
+	type FileLanguagePolicy,
+	LANGUAGE_DOMAINS,
+	type LanguageDomain,
+	type LanguageMatch,
+	languagePointer,
+	languagePolicyForFile,
+} from "./language-config.js";
 import { LENS_TOOL_NAMES, resolveLensToolEnabled } from "./tool-config.js";
 
 /** A tool's on/off switch as a provenance pointer (`/tools/<name>/enabled`). */
@@ -156,6 +168,8 @@ export interface EffectiveServerDecision {
 type ToolSelectionReason =
 	| "selected"
 	| "disabled-by-config"
+	/** A linter the file's `languages.<id>.lint` policy does not list (#195). */
+	| "not-configured-for-language"
 	| "no-project-config"
 	| "not-registered-for-kind"
 	| "no-dispatch-plan";
@@ -172,6 +186,31 @@ interface EffectiveToolDecision {
 	readonly resolvedCwd: string;
 }
 
+/**
+ * The `languages.<id>` policy (#195) that governs a file, when one does.
+ * Absent = every domain takes the default path.
+ */
+export interface EffectiveLanguagePolicyView {
+	/** The governing entry's language key (`typescript`, `zsh`). */
+	readonly key: string;
+	/** `files` (a pattern matched) or `language` (the file's language key). */
+	readonly via: LanguageMatch;
+	/**
+	 * What decided the file's language, for a `language` match: `name`
+	 * (extension or file name).
+	 */
+	readonly languageSource?: string;
+	/** The resolved shell dialect and its evidence, when one decided the key. */
+	readonly dialect?: { readonly dialect: string; readonly source: string };
+	/**
+	 * The domains the entry configures, as the runtime holds them (an
+	 * `lsp.server` that names no registered language server carries
+	 * `unusable: true`). A domain absent here takes the default path.
+	 */
+	readonly domains: Partial<Record<LanguageDomain, unknown>>;
+	readonly decidedBy?: ProvenanceViewEntry;
+}
+
 /** The per-file half: language, servers, tools. */
 export interface EffectiveFileView {
 	/** Home-relative when the file is under `$HOME`. */
@@ -180,6 +219,8 @@ export interface EffectiveFileView {
 	readonly language?: string;
 	/** The coarse dispatch kind, when `file-kinds.ts` classifies the file. */
 	readonly kind?: string;
+	/** The opt-in `languages.<id>` policy governing this file, if any (#195). */
+	readonly languagePolicy?: EffectiveLanguagePolicyView;
 	readonly servers: readonly EffectiveServerDecision[];
 	readonly tools: readonly EffectiveToolDecision[];
 }
@@ -623,11 +664,67 @@ function toolReason(
 	disabled: boolean,
 	lacksConfig: boolean,
 	kind: ReturnType<typeof detectFileKind>,
+	unconfigured = false,
 ): ToolSelectionReason {
 	if (disabled) return "disabled-by-config";
+	if (unconfigured) return "not-configured-for-language";
 	if (selected && lacksConfig) return "no-project-config";
 	if (selected) return "selected";
 	return kind === undefined ? "no-dispatch-plan" : "not-registered-for-kind";
+}
+
+/** The `lint` domain's provenance for an unconfigured linter, else none. */
+function lintDecidedBy(
+	unconfigured: boolean,
+	match: FileLanguagePolicy | undefined,
+	resolved: Resolved<Record<string, unknown>>,
+	homeDir: string,
+): ProvenanceViewEntry | undefined {
+	return unconfigured
+		? domainProvenance(match, "lint", resolved, homeDir)
+		: undefined;
+}
+
+/** The provenance of a policy domain (or of the whole entry, `domain` unset). */
+function domainProvenance(
+	match: FileLanguagePolicy | undefined,
+	domain: LanguageDomain | undefined,
+	resolved: Resolved<Record<string, unknown>>,
+	homeDir: string,
+): ProvenanceViewEntry | undefined {
+	if (match === undefined) return undefined;
+	const pointer =
+		domain === undefined
+			? languagePointer(match.policy.key)
+			: languagePointer(match.policy.key, domain);
+	return viewOf(provenanceOfSubtree(resolved, pointer), homeDir);
+}
+
+/** The governing language policy as the view renders it. */
+function languagePolicyView(
+	match: FileLanguagePolicy | undefined,
+	resolved: Resolved<Record<string, unknown>>,
+	homeDir: string,
+): EffectiveLanguagePolicyView | undefined {
+	if (match === undefined) return undefined;
+	const { policy, via, language } = match;
+	const domains: Partial<Record<LanguageDomain, unknown>> = {};
+	for (const domain of LANGUAGE_DOMAINS) {
+		const value = policy[domain];
+		if (value !== undefined) domains[domain] = value;
+	}
+	return {
+		key: policy.key,
+		via,
+		...(language?.languageSource === undefined
+			? {}
+			: { languageSource: language.languageSource }),
+		...(language?.dialect === undefined ? {} : { dialect: language.dialect }),
+		domains,
+		...decidedByOrNothing(
+			domainProvenance(match, undefined, resolved, homeDir),
+		),
+	};
 }
 
 async function fileView(
@@ -676,11 +773,21 @@ async function fileView(
 		);
 	};
 
+	// The SAME lookup the gates make (`languagePolicyForFile` over the
+	// registered policies), so the entry named here is the one that decided.
+	const policyMatch = languagePolicyForFile(lspConfig.languages, absolute);
+	const languagePolicy = languagePolicyView(policyMatch, resolved, homeDir);
+	const decidedByPolicy = (): ProvenanceViewEntry | undefined =>
+		domainProvenance(policyMatch, "lsp", resolved, homeDir);
+
 	const servers: EffectiveServerDecision[] = explainServersForFile(
 		absolute,
 		lspConfig,
 	).map((entry) => {
 		const spec = redactServerSpec(customServers[entry.server.id]);
+		const policyDecided =
+			entry.reason === "configured-for-language" ||
+			entry.reason === "not-configured-for-language";
 		return {
 			id: entry.server.id,
 			selected: entry.selected,
@@ -689,6 +796,7 @@ async function fileView(
 			...(entry.reason === "disabled-by-config"
 				? decidedByOrNothing(decidedByDeny(entry.server.id))
 				: {}),
+			...(policyDecided ? decidedByOrNothing(decidedByPolicy()) : {}),
 			...(spec === undefined
 				? {}
 				: {
@@ -740,15 +848,28 @@ async function fileView(
 	const wouldRun = new Set(
 		await getAvailableRunners(absolute, { configCwd: runnerCwdOf }),
 	);
+	// The SAME validated policy the dispatcher's context carries
+	// (`configuredLintForFile` over this query's resolution), so a linter named
+	// unconfigured here is the one the dispatch skips.
+	const configuredLint = configuredLintForFile(resolution, absolute).lint;
 	const tools: EffectiveToolDecision[] = ids.map((id) => {
 		const denied = disabledRunners.has(id);
+		const unconfigured = isUnconfiguredLinter(configuredLint, id);
 		const lacksConfig = available.has(id) && !wouldRun.has(id);
 		return {
 			id,
-			selected: available.has(id) && !denied && !lacksConfig,
-			reason: toolReason(available.has(id), denied, lacksConfig, kind),
+			selected: available.has(id) && !denied && !unconfigured && !lacksConfig,
+			reason: toolReason(
+				available.has(id),
+				denied,
+				lacksConfig,
+				kind,
+				unconfigured,
+			),
 			...decidedByOrNothing(
-				viewOf(disabledRunners.get(id)?.decidedBy, homeDir),
+				denied
+					? viewOf(disabledRunners.get(id)?.decidedBy, homeDir)
+					: lintDecidedBy(unconfigured, policyMatch, resolved, homeDir),
 			),
 			resolvedCwd: homeRelativePath(runnerCwdOf(id), homeDir),
 		};
@@ -758,6 +879,7 @@ async function fileView(
 		path: homeRelativePath(absolute, homeDir),
 		...(language === undefined ? {} : { language: language.id }),
 		...(kind === undefined ? {} : { kind }),
+		...(languagePolicy === undefined ? {} : { languagePolicy }),
 		servers,
 		tools,
 	};

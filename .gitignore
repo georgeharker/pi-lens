@@ -155,6 +155,9 @@ migrate-*.js
 !docs/io-bridge-v2-migration.md
 !docs/rfcs/*.md
 !docs/configuration.md
+# The user guide for the opt-in `languages` setting (#195), linked from
+# configuration.md, settings.md and llms.txt.
+!docs/languages.md
 !docs/release-qa-baseline.md
 
 # release-qa run artifacts (scripts/release-qa.mjs writes these into cwd)

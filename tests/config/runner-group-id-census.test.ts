@@ -35,6 +35,10 @@ const DYNAMIC_SITES: Record<string, string> = {
 		"a verdict's list of the runners that completed, copied from the result rows; it is not a dispatch group and introduces no ids",
 	"clients/language-policy.ts#getPrimaryDispatchGroup:17282e2d":
 		"copies or filters the censused PRIMARY_DISPATCH_GROUPS literals; introduces no ids",
+	"clients/dispatch/language-lint.ts#orderLintFallback:957ecc1c":
+		"#195 lint fallback: keeps the input group's remaining runner ids; introduces no ids",
+	"clients/dispatch/language-lint.ts#orderLintFallback:8d9b680c":
+		"#195 lint fallback: the input groups' own listed ids, reordered into one group; introduces no ids",
 };
 
 type Problem = { key: string; detail: string };
