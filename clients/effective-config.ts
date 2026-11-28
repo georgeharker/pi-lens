@@ -197,7 +197,7 @@ export interface EffectiveLanguagePolicyView {
 	readonly via: LanguageMatch;
 	/**
 	 * What decided the file's language, for a `language` match: `name`
-	 * (extension or file name).
+	 * (extension or file name) or `shebang` (an extensionless script).
 	 */
 	readonly languageSource?: string;
 	/** The resolved shell dialect and its evidence, when one decided the key. */

@@ -28,8 +28,9 @@ in a project's `.pi-lens.json` (for that project only).
 }
 ```
 
-This covers `.zsh` files, `.sh` files whose first line is `#!/bin/zsh`, and
-the dotfiles listed under `files`.
+This covers `.zsh` files, `.sh` files whose first line is `#!/bin/zsh`,
+extensionless scripts such as `bin/deploy` with that first line, and the
+dotfiles listed under `files`.
 
 **Make your own language server the primary one for shell scripts:**
 
@@ -130,9 +131,12 @@ pi-lens takes these steps for every file, and the first match wins:
    applies.
 2. Otherwise, pi-lens decides the file's language from its file name or its
    extension. `deploy.py` is `python`, and `Dockerfile` is `dockerfile`.
-3. For a shell file, pi-lens also decides the dialect. It uses the dialect
+3. If the file has no extension and pi-lens does not know its name, the first
+   line decides. `bin/tool` starting with `#!/usr/bin/env python3` is
+   `python`. A file with an extension never uses its first line for this.
+4. For a shell file, pi-lens also decides the dialect. It uses the dialect
    entry first (`zsh`), then the `shell` entry.
-4. If no entry matches, the file keeps the automatic choice.
+5. If no entry matches, the file keeps the automatic choice.
 
 ### How the shell dialect is decided
 
@@ -146,10 +150,34 @@ pi-lens reads the start of the file and checks these in order:
 A shell file that states none of these, such as a `Makefile`, uses only the
 `shell` entry, never `bash`.
 
+### First lines that set a language
+
+These programs on the first line of an extensionless file set its language.
+pi-lens ignores a version number after the name, so `python3.12` counts as
+`python`.
+
+| Program | Language |
+| --- | --- |
+| `python`, `pypy` | `python` |
+| `node`, `nodejs`, `bun` | `javascript` |
+| `deno`, `ts-node`, `tsx` | `typescript` |
+| `sh`, `bash`, `zsh`, `dash`, `ash`, `ksh`, `mksh`, `busybox` | `shell`, with that dialect |
+| `fish` | `fish` |
+| `ruby`, `jruby` | `ruby` |
+| `perl` | `perl` |
+| `lua`, `luajit` | `lua` |
+| `php` | `php` |
+| `pwsh` | `powershell` |
+| `elixir`, `swift`, `groovy`, `julia` | that language |
+| `Rscript` | `r` |
+
+Any other program leaves the file without a language. So does a launcher
+that can run anything, such as `uv run`.
+
 ### `files` patterns
 
-Use `files` for files that pi-lens cannot place by name, such as dotfiles
-and extensionless scripts.
+Use `files` for files that pi-lens cannot place by name or first line, such
+as dotfiles.
 
 - A pattern without a `/` matches the file name: `.zshrc`, `*.zsh-theme`.
 - A pattern with a `/` matches the end of the path: `functions/*` matches
@@ -238,8 +266,8 @@ Most other linters use the tool's name, such as `eslint`, `oxlint`,
 language.
 
 Linters run only on files that pi-lens recognizes by extension or file name.
-A file that matches only through `files`, such as `.zshrc`, gets no linters
-yet. The `lsp` and
+A file that matches only through `files`, such as `.zshrc`, or only through
+its first line, such as `bin/deploy`, gets no linters yet. The `lsp` and
 `format` settings do apply to those files.
 
 ## The `format` setting
@@ -357,7 +385,7 @@ answer shows which entry applied and why:
 "languagePolicy": {
   "key": "zsh",
   "via": "language",          // or "files" when a pattern matched
-  "languageSource": "name",   // extension or file name
+  "languageSource": "name",   // or "shebang" for an extensionless script
   "dialect": { "dialect": "zsh", "source": "shebang" },
   "domains": { "lsp": { "server": "shuck" }, "format": { "formatter": "shfmt" } },
   "decidedBy": { "tier": "project", "file": "~/my-project/.pi-lens.json" }

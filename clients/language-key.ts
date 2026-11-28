@@ -1,8 +1,11 @@
 /**
  * THE language key of a file (#195): the language-registry id
  * (`resolveLanguage`: `typescript`, `python`, `c`), which is what users
- * write, never a dispatch kind (`jsts`, `cxx`), plus one addition:
+ * write, never a dispatch kind (`jsts`, `cxx`). Two additions:
  *
+ * - SHEBANG FALLBACK. An extensionless file the registry cannot place takes
+ *   its language from its shebang interpreter (the pinned parser in
+ *   `clients/shell-dialect.ts`). A file with an extension never does.
  * - SHELL DIALECT. A shell file that states a dialect (directive, shebang,
  *   `.zsh`/`.bash`) is keyed by it first (`zsh`, then `shell`). One that
  *   states none (`Makefile`) gets no dialect key, so `bash` never captures
@@ -16,7 +19,10 @@ import {
 	type LanguageEntry,
 	resolveLanguage,
 } from "./language-registry.js";
-import { resolveShellFileDialect } from "./shell-dialect.js";
+import {
+	readShebangInterpreter,
+	resolveShellFileDialect,
+} from "./shell-dialect.js";
 
 /** The registry's shell language id. */
 const SHELL_LANGUAGE_ID = "shell";
@@ -37,7 +43,7 @@ export const SHELL_DIALECT_KEYS: readonly string[] = [
 ];
 
 /** What decided a file's language. */
-export type LanguageSource = "name";
+export type LanguageSource = "name" | "shebang";
 
 /** Where a resolved dialect came from, most authoritative first. */
 export type DialectSource = "directive" | "shebang" | "extension" | "default";
@@ -82,6 +88,9 @@ export interface ParsedLanguageKey {
 const LANGUAGE_IDS: ReadonlySet<string> = new Set(
 	LANGUAGES.map((entry) => entry.id),
 );
+const BY_ID: ReadonlyMap<string, LanguageEntry> = new Map(
+	LANGUAGES.map((entry) => [entry.id, entry]),
+);
 const DIALECT_KEYS: ReadonlySet<string> = new Set(SHELL_DIALECT_KEYS);
 
 /** A registry language id or a shell dialect key; undefined otherwise. */
@@ -92,12 +101,65 @@ export function parseLanguageKey(key: string): ParsedLanguageKey | undefined {
 	return undefined;
 }
 
-/** A file's registry language (`resolveLanguage`), with its evidence. */
+/**
+ * Shebang interpreter names and the registry language each runs, after a
+ * trailing version is stripped (`python3.12` -> `python`, `pypy3` ->
+ * `pypy`). An interpreter whose language the registry lacks, or a launcher
+ * that can run anything (`uv run`, `env` alone), leaves the file unplaced.
+ */
+const INTERPRETER_LANGUAGES: ReadonlyMap<string, string> = new Map([
+	["python", "python"],
+	["pypy", "python"],
+	["node", "javascript"],
+	["nodejs", "javascript"],
+	["bun", "javascript"],
+	["deno", "typescript"],
+	["ts-node", "typescript"],
+	["tsx", "typescript"],
+	...SHELL_DIALECT_KEYS.map((name) => [name, SHELL_LANGUAGE_ID] as const),
+	["fish", "fish"],
+	["ruby", "ruby"],
+	["jruby", "ruby"],
+	["perl", "perl"],
+	["lua", "lua"],
+	["luajit", "lua"],
+	["php", "php"],
+	["pwsh", "powershell"],
+	["elixir", "elixir"],
+	["swift", "swift"],
+	["groovy", "groovy"],
+	["julia", "julia"],
+	["rscript", "r"],
+]);
+
+/** The registry language a shebang interpreter name runs, if known. */
+export function languageForInterpreter(
+	interpreter: string,
+): string | undefined {
+	const name = interpreter.toLowerCase();
+	return (
+		INTERPRETER_LANGUAGES.get(name) ??
+		INTERPRETER_LANGUAGES.get(name.replace(/[\d.]+$/, ""))
+	);
+}
+
+/**
+ * A file's registry language: `resolveLanguage`'s answer, else, for an
+ * extensionless file only, its shebang interpreter's language. Reads at most
+ * a shebang line from disk, and only for an extensionless file the registry
+ * cannot place.
+ */
 export function resolveFileLanguage(
 	filePath: string,
 ): ResolvedFileLanguage | undefined {
 	const byName = resolveLanguage(filePath);
-	return byName ? { entry: byName, source: "name" } : undefined;
+	if (byName) return { entry: byName, source: "name" };
+	if (extname(filePath) !== "") return undefined;
+	const interpreter = readShebangInterpreter(filePath);
+	const id =
+		interpreter === null ? undefined : languageForInterpreter(interpreter);
+	const entry = id === undefined ? undefined : BY_ID.get(id);
+	return entry === undefined ? undefined : { entry, source: "shebang" };
 }
 
 /** Dialect-bearing shell extensions (upstream maps only `.zsh` to a name). */
@@ -124,7 +186,8 @@ function shellDialect(filePath: string): ResolvedDialect | undefined {
 
 /**
  * Resolve a file's language key. Reads up to the dialect owner's sniff
- * budget (4 KB) for a shell file, and nothing otherwise.
+ * budget (4 KB) for a shell file, a shebang line for an extensionless file
+ * the registry cannot place, and nothing otherwise.
  */
 export function resolveLanguageKey(filePath: string): ResolvedLanguageKey {
 	const resolved = resolveFileLanguage(filePath);

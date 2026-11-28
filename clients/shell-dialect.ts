@@ -64,6 +64,35 @@ function parseShebang(content: string): string | null {
 	return interpreter[1].trim();
 }
 
+/** How many leading bytes a shebang-only read inspects (one line suffices). */
+const SHEBANG_SNIFF_BYTES = 256;
+
+/**
+ * The interpreter NAME a file's shebang names (`python3`, `node`, `zsh`), or
+ * null when the file has none or cannot be read. The same pinned parser
+ * dialect resolution uses, exported so a seam classifying any interpreted
+ * file (`clients/language-key.ts`) shares it rather than re-deriving it.
+ * Reads at most {@link SHEBANG_SNIFF_BYTES}.
+ */
+export function readShebangInterpreter(filePath: string): string | null {
+	let head: string;
+	try {
+		const fd = fs.openSync(filePath, "r");
+		try {
+			const buffer = Buffer.alloc(SHEBANG_SNIFF_BYTES);
+			const bytesRead = fs.readSync(fd, buffer, 0, SHEBANG_SNIFF_BYTES, 0);
+			head = buffer.subarray(0, bytesRead).toString("utf8");
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		// none: an unreadable file has no shebang to classify it by.
+		return null;
+	}
+	// Only the first line can be a shebang.
+	return parseShebang(head.split("\n", 1)[0] ?? "");
+}
+
 function parseShellDirective(content: string): string | null {
 	for (const line of content.split("\n")) {
 		const match = SHELLCHECK_SHELL_OR_EMPTY_REGEXP.exec(line);

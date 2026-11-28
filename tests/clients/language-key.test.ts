@@ -3,7 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	languageForInterpreter,
 	parseLanguageKey,
+	resolveFileLanguage,
 	resolveLanguageKey,
 	SHELL_DIALECT_KEYS,
 } from "../../clients/language-key.js";
@@ -119,5 +121,83 @@ describe("resolveLanguageKey — shell dialects", () => {
 		expect(key.language).toBe("shell");
 		expect(key.dialect).toBeUndefined();
 		expect(key.candidates).toEqual(["shell"]);
+	});
+});
+
+describe("resolveFileLanguage — shebang fallback for extensionless files", () => {
+	it.each([
+		["#!/usr/bin/env python3\n", "python"],
+		["#!/usr/bin/python3.12 -u\n", "python"],
+		["#!/usr/bin/env node\n", "javascript"],
+		["#!/usr/bin/env -S deno run --allow-read\n", "typescript"],
+		["#!/usr/bin/env bun\n", "javascript"],
+		["#!/bin/bash\n", "shell"],
+		["#!/usr/bin/env ruby\n", "ruby"],
+		["#!/usr/bin/env perl\n", "perl"],
+		["#!/usr/bin/env fish\n", "fish"],
+	])("places %j as %s", (shebang, language) => {
+		const resolved = resolveFileLanguage(write("script", `${shebang}body\n`));
+		expect(resolved?.entry.id).toBe(language);
+		expect(resolved?.source).toBe("shebang");
+	});
+
+	it("climbs from a shell shebang to the dialect key, then shell", () => {
+		const key = resolveLanguageKey(write("bin/deploy", "#!/bin/zsh\necho\n"));
+		expect(key).toMatchObject({
+			language: "shell",
+			languageSource: "shebang",
+			dialect: { dialect: "zsh", source: "shebang" },
+		});
+		expect(key.candidates).toEqual(["zsh", "shell"]);
+	});
+
+	it("never consults the shebang of a file with an extension", () => {
+		expect(
+			resolveFileLanguage(write("notes.txt", "#!/usr/bin/env python3\n")),
+		).toBeUndefined();
+		expect(
+			resolveFileLanguage(write("tool.rb", "#!/usr/bin/env python3\n"))?.entry
+				.id,
+		).toBe("ruby");
+	});
+
+	it("leaves no shebang, a later line, or an unknown interpreter unplaced", () => {
+		expect(resolveFileLanguage(write("README", "hello\n"))).toBeUndefined();
+		expect(
+			resolveFileLanguage(write("later", "\n#!/usr/bin/env python3\n")),
+		).toBeUndefined();
+		expect(
+			resolveFileLanguage(write("tool", "#!/usr/bin/env uv run --script\n")),
+		).toBeUndefined();
+	});
+
+	it("keeps a name-classified file on the registry's answer", () => {
+		expect(
+			resolveFileLanguage(write("Dockerfile", "#!/usr/bin/env python3\n"))
+				?.entry.id,
+		).toBe("dockerfile");
+	});
+
+	it("strips a trailing version from the interpreter name", () => {
+		expect(languageForInterpreter("python3.11")).toBe("python");
+		expect(languageForInterpreter("pypy3")).toBe("python");
+		expect(languageForInterpreter("lua5.4")).toBe("lua");
+		expect(languageForInterpreter("Rscript")).toBe("r");
+		expect(languageForInterpreter("awk")).toBeUndefined();
+	});
+
+	it("maps every interpreter onto a registry language", () => {
+		const ids = new Set<string>(LANGUAGES.map((entry) => entry.id));
+		for (const name of [
+			"python",
+			"node",
+			"deno",
+			"zsh",
+			"perl",
+			"pwsh",
+			"julia",
+			"rscript",
+		])
+			expect(ids.has(languageForInterpreter(name) ?? "")).toBe(true);
 	});
 });

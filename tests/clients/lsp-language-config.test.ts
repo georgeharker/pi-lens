@@ -42,6 +42,9 @@ const FILES: Record<string, string> = {
 	"a.ts": "export {};\n",
 	".zshrc": "setopt extendedglob\n",
 	"functions/myfunc": "echo func\n",
+	"bin/tool": "#!/usr/bin/env python3\nprint(1)\n",
+	"bin/deploy": "#!/bin/zsh\necho\n",
+	"bin/notes": "plain text\n",
 };
 
 function writeFiles(dir = fx.projectDir): void {
@@ -134,6 +137,20 @@ describe("languages.<id>.lsp — the configured server", () => {
 		);
 		expect(attached(at("a.zsh"), config)).toEqual(["shuck"]);
 		expect(reasonOf(at("bash-shebang.sh"), config, "bash")).toBe("selected");
+	});
+
+	it("climbs from shebang to language for extensionless scripts", async () => {
+		const config = await configured({
+			languages: {
+				python: { lsp: { server: "python-jedi" } },
+				zsh: { lsp: { server: "shuck" } },
+			},
+		});
+		expect(attached(at("bin/tool"), config)).toEqual(["python-jedi"]);
+		expect(attached(at("bin/deploy"), config)).toEqual(["shuck"]);
+		expect(reasonOf(at("bin/notes"), config, "python-jedi")).toBe(
+			"extension-mismatch",
+		);
 	});
 
 	it("admits files the registry cannot place through `files` patterns", async () => {
@@ -294,6 +311,17 @@ describe("languages — effective_config", () => {
 		expect(file.servers.find((s) => s.id === "bash")?.reason).toBe(
 			"not-configured-for-language",
 		);
+	});
+
+	it("reports a shebang-placed script's evidence", async () => {
+		await configured({
+			languages: { python: { lsp: { server: "python-jedi" } } },
+		});
+		expect((await viewOf("bin/tool")).languagePolicy).toMatchObject({
+			key: "python",
+			via: "language",
+			languageSource: "shebang",
+		});
 	});
 
 	it("renders no policy for a file the config does not govern", async () => {
